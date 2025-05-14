@@ -85,8 +85,8 @@ async def send_message_with_flag(recipient_mobile: str, country_code: str, optio
         "Content-Type": "application/json"
     }
 
-    # Convert country codes to full names for buttons
-    button_options = [{"type": "solid", "body": COUNTRY_NAMES[code], "reply": code} for code in options]
+    # Convert country codes to full names for buttons, but now use full name as reply too
+    button_options = [{"type": "solid", "body": COUNTRY_NAMES[code], "reply": COUNTRY_NAMES[code]} for code in options]
 
     payload = {
         "to": recipient_mobile,
@@ -192,56 +192,24 @@ async def send_difficulty_buttons(recipient_mobile: str):
         logger.error(f"Error sending difficulty options: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def send_game_over(recipient_mobile: str, score: int, total: int):
+async def get_flag_description(country_name: str) -> str:
     """
-    Send game over message with final score
+    Fetch flag description from restcountries API
     """
-    bot_id = os.getenv('BOT_ID')
-    api_key = os.getenv('API_KEY')
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "to": recipient_mobile,
-        "type": "button",
-        "button": {
-            "body": {
-                "type": "text",
-                "text": {
-                    "body": f"🎮 Game Over!\n\nYour score: {score}/{total}\n\nWould you like to play again?"
-                }
-            },
-            "buttons": [
-                {
-                    "type": "solid",
-                    "body": "Play Again",
-                    "reply": "play_again"
-                }
-            ],
-            "allow_custom_response": False
-        }
-    }
-
     try:
-        logger.debug(f"Sending game over message to {recipient_mobile} with payload: {payload}")
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{SWIFTCHAT_API_URL}{bot_id}/messages",
-                headers=headers,
-                json=payload
-            )
-            logger.debug(f"Game over API response: {response.status_code} - {response.text}")
-            if response.status_code not in [200, 201]:
-                logger.error(f"SwiftChat API error: {response.text}")
+            response = await client.get(f"https://restcountries.com/v3.1/name/{country_name}?fields=flags")
+            if response.status_code == 200:
+                data = response.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    return data[0]["flags"].get("alt", "")
     except Exception as e:
-        logger.error(f"Error sending game over message: {str(e)}")
+        logger.error(f"Error fetching flag description: {str(e)}")
+    return ""
 
 async def send_feedback_message(recipient_mobile: str, is_correct: bool, correct_country: str):
     """
-    Send feedback message after each answer
+    Send feedback message after each answer with flag description
     """
     bot_id = os.getenv('BOT_ID')
     api_key = os.getenv('API_KEY')
@@ -251,10 +219,18 @@ async def send_feedback_message(recipient_mobile: str, is_correct: bool, correct
         "Content-Type": "application/json"
     }
 
+    # Get flag description
+    country_name = COUNTRY_NAMES[correct_country]
+    flag_description = await get_flag_description(country_name)
+    
     if is_correct:
-        message = f"✅ Correct! That's {COUNTRY_NAMES[correct_country]}!"
+        message = "✅ Correct! Well done!"
+        if flag_description:
+            message += f"\n\n🎓 Fun fact about this flag:\n{flag_description}"
     else:
-        message = f"❌ Ooops, not quite! This is the flag of: {COUNTRY_NAMES[correct_country]}"
+        message = f"❌ Wrong! The correct answer was: {country_name}"
+        if flag_description:
+            message += f"\n\n🎓 Learn about this flag:\n{flag_description}"
 
     payload = {
         "to": recipient_mobile,
@@ -288,6 +264,63 @@ async def send_feedback_message(recipient_mobile: str, is_correct: bool, correct
             logger.debug(f"Feedback message API response: {response.status_code} - {response.text}")
     except Exception as e:
         logger.error(f"Error sending feedback message: {str(e)}")
+
+async def send_game_over(recipient_mobile: str, score: int, total: int):
+    """
+    Send game over message with final score
+    """
+    bot_id = os.getenv('BOT_ID')
+    api_key = os.getenv('API_KEY')
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    message = f"🎮 Game Over!\n\nYour score: {score}/{total}"
+    if score == total:
+        message += "\n\n🏆 Perfect score! You're a flag expert! 🌟"
+    elif score >= total * 0.8:
+        message += "\n\n🎉 Great job! You really know your flags!"
+    elif score >= total * 0.6:
+        message += "\n\n👍 Good effort! Keep learning!"
+    else:
+        message += "\n\n📚 Keep practicing! You'll get better!"
+
+    payload = {
+        "to": recipient_mobile,
+        "type": "button",
+        "button": {
+            "body": {
+                "type": "text",
+                "text": {
+                    "body": message
+                }
+            },
+            "buttons": [
+                {
+                    "type": "solid",
+                    "body": "Play Again",
+                    "reply": "play_again"
+                }
+            ],
+            "allow_custom_response": False
+        }
+    }
+
+    try:
+        logger.debug(f"Sending game over message to {recipient_mobile}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SWIFTCHAT_API_URL}{bot_id}/messages",
+                headers=headers,
+                json=payload
+            )
+            logger.debug(f"Game over API response: {response.status_code} - {response.text}")
+            if response.status_code not in [200, 201]:
+                logger.error(f"SwiftChat API error: {response.text}")
+    except Exception as e:
+        logger.error(f"Error sending game over message: {str(e)}")
 
 async def send_next_question(mobile: str, user_state: dict):
     """
@@ -345,8 +378,12 @@ async def webhook(request: dict):
         
         # Handle both button responses and text messages
         if request['type'] == 'button_response':
-            # This is a button response
+            # This is a button response - get the full country name
             response = request["button_response"]['body']
+            # Find the country code that matches this country name
+            country_code = next((code for code, name in COUNTRY_NAMES.items() if name == response), None)
+            if country_code:
+                response = country_code  # Convert back to country code for internal logic
         elif "text" in request and isinstance(request["text"], dict):
             # This is a text message with body
             response = request["text"].get("body", "").lower()
