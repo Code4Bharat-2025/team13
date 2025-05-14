@@ -27,7 +27,7 @@ FunWithFlags Chatbot
 
 🛠️ Technologies
 
-    Backend  : Python
+    Backend  : Python FastAPI
 
     Database  : Firebase 
 
@@ -56,6 +56,19 @@ Follow the steps below to set up and run the Gaming Chatbot locally:
 
                 Install modules using pip
                     pip install -r requirements.txt
+
+                Run FastAPI
+                    uvicorn main:app --reload
+
+                Start the Ngrok tunnel
+                    ngrok http 8000 # port is based on the FastAPI standard port
+
+                Update bot webhook 
+                    https://v1-api.swiftchat.ai/api/bots/0250054444411113/webhook-url
+                    {
+                        "webhook_url": "<yourngrok url>/webhook"
+                    }
+
 
 
         
