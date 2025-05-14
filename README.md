@@ -60,7 +60,10 @@ Follow the steps below to set up and run the Gaming Chatbot locally:
 
         
 ✅ Optional: Test the Setup
-        Run basic tests to ensure the chatbot is working using below chatbot URL-
+
+        1.In .env file API key need to be replaced with VALID API Key
+        
+        2.Run basic tests to ensure the chatbot is working using below chatbot URL-
         https://web.convegenius.ai/bots?botId=0250054444411113
 
 📌 Notes
