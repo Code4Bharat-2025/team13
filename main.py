@@ -24,6 +24,32 @@ app = FastAPI(title="Fun with Flags API")
 FLAG_BASE_URL = "https://flagcdn.com/16x12/"
 SWIFTCHAT_API_URL = "https://v1-api.swiftchat.ai/api/bots/"
 
+# Country code to name mapping
+COUNTRY_NAMES = {
+    # Beginner countries
+    'us': 'United States',
+    'gb': 'United Kingdom',
+    'fr': 'France',
+    'de': 'Germany',
+    'it': 'Italy',
+    'es': 'Spain',
+    'jp': 'Japan',
+    'cn': 'China',
+    'in': 'India',
+    'br': 'Brazil',
+    # Hard countries
+    'kz': 'Kazakhstan',
+    'uz': 'Uzbekistan',
+    'mm': 'Myanmar',
+    'la': 'Laos',
+    'np': 'Nepal',
+    'bt': 'Bhutan',
+    'mv': 'Maldives',
+    'bn': 'Brunei',
+    'tl': 'Timor-Leste',
+    'kh': 'Cambodia'
+}
+
 # Game state storage (in-memory for demonstration)
 # In production, use a proper database
 user_states: Dict[str, dict] = {}
@@ -59,6 +85,9 @@ async def send_message_with_flag(recipient_mobile: str, country_code: str, optio
         "Content-Type": "application/json"
     }
 
+    # Convert country codes to full names for buttons
+    button_options = [{"type": "solid", "body": COUNTRY_NAMES[code], "reply": code} for code in options]
+
     payload = {
         "to": recipient_mobile,
         "type": "button",
@@ -70,10 +99,7 @@ async def send_message_with_flag(recipient_mobile: str, country_code: str, optio
                     "body": "🌎 Which country does this flag belong to?"
                 }
             },
-            "buttons": [
-                {"type": "solid", "body": option, "reply": option}
-                for option in options
-            ],
+            "buttons": button_options,
             "allow_custom_response": False
         }
     }
@@ -213,6 +239,72 @@ async def send_game_over(recipient_mobile: str, score: int, total: int):
     except Exception as e:
         logger.error(f"Error sending game over message: {str(e)}")
 
+async def send_feedback_message(recipient_mobile: str, is_correct: bool, correct_country: str):
+    """
+    Send feedback message after each answer
+    """
+    bot_id = os.getenv('BOT_ID')
+    api_key = os.getenv('API_KEY')
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    if is_correct:
+        message = f"✅ Correct! That's {COUNTRY_NAMES[correct_country]}!"
+    else:
+        message = f"❌ Ooops, not quite! This is the flag of: {COUNTRY_NAMES[correct_country]}"
+
+    payload = {
+        "to": recipient_mobile,
+        "type": "button",
+        "button": {
+            "body": {
+                "type": "text",
+                "text": {
+                    "body": message
+                }
+            },
+            "buttons": [
+                {
+                    "type": "solid",
+                    "body": "Continue",
+                    "reply": "continue"
+                }
+            ],
+            "allow_custom_response": False
+        }
+    }
+
+    try:
+        logger.debug(f"Sending feedback message to {recipient_mobile}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{SWIFTCHAT_API_URL}{bot_id}/messages",
+                headers=headers,
+                json=payload
+            )
+            logger.debug(f"Feedback message API response: {response.status_code} - {response.text}")
+    except Exception as e:
+        logger.error(f"Error sending feedback message: {str(e)}")
+
+async def send_next_question(mobile: str, user_state: dict):
+    """
+    Helper function to send the next question
+    """
+    country = random.choice(user_state["countries"])
+    user_state["current_country"] = country
+    user_state["countries"].remove(country)
+    
+    # Generate options
+    all_countries = BEGINNER_COUNTRIES if user_state["difficulty"] == "beginner" else HARD_COUNTRIES
+    options = random.sample([c for c in all_countries if c != country], 3)
+    options.append(country)
+    random.shuffle(options)
+    
+    await send_message_with_flag(mobile, country, options)
+
 @app.post("/start-quiz/{recipient_mobile}")
 async def start_quiz(recipient_mobile: str):
     """
@@ -299,46 +391,35 @@ async def webhook(request: dict):
                 "countries": countries.copy(),
                 "current_country": None,
                 "score": 0,
-                "questions_asked": 0
+                "questions_asked": 0,
+                "awaiting_continue": False
             })
 
             # Send first question
-            country = random.choice(user_state["countries"])
-            user_state["current_country"] = country
-            user_state["countries"].remove(country)
-            
-            # Generate options (1 correct + 3 random from the same difficulty)
-            options = random.sample([c for c in countries if c != country], 3)
-            options.append(country)
-            random.shuffle(options)
-            
-            await send_message_with_flag(mobile, country, options)
+            await send_next_question(mobile, user_state)
             
         elif user_state["state"] == "playing":
-            # Handle answer
-            if response == user_state["current_country"]:
-                user_state["score"] += 1
-            
-            user_state["questions_asked"] += 1
-            
-            # Check if game should continue
-            if user_state["questions_asked"] >= 5 or not user_state["countries"]:
-                # Game over
-                await send_game_over(mobile, user_state["score"], user_state["questions_asked"])
-                user_states[mobile]["state"] = "game_over"
-            else:
-                # Send next question
-                country = random.choice(user_state["countries"])
-                user_state["current_country"] = country
-                user_state["countries"].remove(country)
+            if user_state.get("awaiting_continue") and response.lower() == "continue":
+                # User clicked continue, send next question or end game
+                if user_state["questions_asked"] >= 5 or not user_state["countries"]:
+                    # Game over
+                    await send_game_over(mobile, user_state["score"], user_state["questions_asked"])
+                    user_states[mobile]["state"] = "game_over"
+                else:
+                    # Send next question
+                    await send_next_question(mobile, user_state)
+                user_state["awaiting_continue"] = False
+            elif not user_state.get("awaiting_continue"):
+                # Handle answer
+                is_correct = response == user_state["current_country"]
+                if is_correct:
+                    user_state["score"] += 1
                 
-                # Generate options
-                all_countries = BEGINNER_COUNTRIES if user_state["difficulty"] == "beginner" else HARD_COUNTRIES
-                options = random.sample([c for c in all_countries if c != country], 3)
-                options.append(country)
-                random.shuffle(options)
+                user_state["questions_asked"] += 1
+                user_state["awaiting_continue"] = True
                 
-                await send_message_with_flag(mobile, country, options)
+                # Send feedback
+                await send_feedback_message(mobile, is_correct, user_state["current_country"])
         
         elif user_state["state"] == "game_over":
             if response == "play_again":
